@@ -238,6 +238,7 @@ class SAM2Base(torch.nn.Module):
             use_multimask_token_for_obj_ptr=self.use_multimask_token_for_obj_ptr,
             **(self.sam_mask_decoder_extra_args or {}),
         )
+        # 若果要在encoder中使用对象指针的交叉注意力
         if self.use_obj_ptrs_in_encoder:
             # a linear projection on SAM output tokens to turn them into object pointers
             self.obj_ptr_proj = torch.nn.Linear(self.hidden_dim, self.hidden_dim)
