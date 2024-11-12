@@ -149,7 +149,11 @@ class ImageEncoderViT3D(nn.Module):
         x = self.neck(x.permute(0, 4, 1, 2, 3))
 
         # output_size = [1,256,16,16,16]
-        return x
+        output = {
+            "backbone_fpn": [x,],
+            "vision_pos_enc": self.pos_embed,
+        }
+        return output
 
 
 class Block3D(nn.Module):
@@ -201,10 +205,11 @@ class Block3D(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 保存残差
+        # x = [1,16,16,16,768]，这个x就是patchembedding了
         shortcut = x
         x = self.norm1(x)
         # Window partition
-        # 划分window的目的就是为了组成一个windows列表来计算自注意力
+        # 这里可以继续对patchembedding进行分块，然后进行window attention
         if self.window_size > 0:
             D, H, W = x.shape[1], x.shape[2], x.shape[3]
             x, pad_dhw = window_partition3D(x, self.window_size)

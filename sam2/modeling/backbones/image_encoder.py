@@ -28,11 +28,16 @@ class ImageEncoder(nn.Module):
 
     def forward(self, sample: torch.Tensor):
         # Forward through backbone
+        # torch.Size([1, 3, 1024, 1024])
+        print("sample shape: ", sample.shape)
         features, pos = self.neck(self.trunk(sample))
+        print("features: ", len(features))
+        print("features shape: ", features[-1].shape)
+        # features[-1].shape : torch.Size([1, 256, 32, 32])
         if self.scalp > 0:
             # Discard the lowest resolution features
             features, pos = features[: -self.scalp], pos[: -self.scalp]
-
+        
         src = features[-1]
         output = {
             "vision_features": src,

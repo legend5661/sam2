@@ -312,7 +312,7 @@ class SAM2Train(SAM2Base):
                     input.flat_img_batch, img_ids
                 )
 
-            # Get output masks based on this frame's prompts and previous memory
+            # Get output masks based on this frame's prompts and previous memory重要的一步：使用track_step函数来得到当前的预测mask输出
             current_out = self.track_step(
                 frame_idx=stage_id,
                 is_init_cond_frame=stage_id in init_cond_frames,

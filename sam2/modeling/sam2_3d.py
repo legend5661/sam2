@@ -11,8 +11,10 @@ import torch.nn.functional as F
 from torch.nn.init import trunc_normal_
 
 from sam2.modeling.sam.mask_decoder import MaskDecoder
+from sam2.modeling.sam.mask_decoder3D import MaskDecoder3D
 from sam2.modeling.sam.prompt_encoder import PromptEncoder
-from sam2.modeling.sam.transformer import TwoWayTransformer
+from sam2.modeling.sam.prompt_encoder3D import PromptEncoder3D
+# from sam2.modeling.sam.transformer import TwoWayTransformer
 from sam2.modeling.sam2_utils import get_1d_sine_pe, MLP, select_closest_cond_frames
 
 # a large negative value as a placeholder score for missing objects
@@ -118,7 +120,7 @@ class SAM2_3D(torch.nn.Module):
         # Part 2: memory attention to condition current frame's visual features
         # with memories (and obj ptrs) from past frames
         self.memory_attention = memory_attention
-        self.hidden_dim = image_encoder.neck.d_model
+        self.hidden_dim = image_encoder.embed_dim
 
         # Part 3: memory encoder for the previous frame's outputs
         self.memory_encoder = memory_encoder
@@ -211,23 +213,19 @@ class SAM2_3D(torch.nn.Module):
 
         # build PromptEncoder and MaskDecoder from SAM
         # (their hyperparameters like `mask_in_chans=16` are from SAM code)
-        self.sam_prompt_encoder = PromptEncoder(
+        # 3D改造1
+        self.sam_prompt_encoder = PromptEncoder3D(
             embed_dim=self.sam_prompt_embed_dim,
             image_embedding_size=(
                 self.sam_image_embedding_size,
                 self.sam_image_embedding_size,
+                self.sam_image_embedding_size,
             ),
-            input_image_size=(self.image_size, self.image_size),
+            input_image_size=(self.image_size, self.image_size, self.image_size),
             mask_in_chans=16,
         )
-        self.sam_mask_decoder = MaskDecoder(
+        self.sam_mask_decoder = MaskDecoder3D(
             num_multimask_outputs=3,
-            transformer=TwoWayTransformer(
-                depth=2,
-                embedding_dim=self.sam_prompt_embed_dim,
-                mlp_dim=2048,
-                num_heads=8,
-            ),
             transformer_dim=self.sam_prompt_embed_dim,
             iou_head_depth=3,
             iou_head_hidden_dim=256,
@@ -307,6 +305,7 @@ class SAM2_3D(torch.nn.Module):
         assert backbone_features.size(1) == self.sam_prompt_embed_dim
         assert backbone_features.size(2) == self.sam_image_embedding_size
         assert backbone_features.size(3) == self.sam_image_embedding_size
+        assert backbone_features.size(4) == self.sam_image_embedding_size
 
         # a) Handle point prompts
         if point_inputs is not None:
@@ -315,10 +314,10 @@ class SAM2_3D(torch.nn.Module):
             assert sam_point_coords.size(0) == B and sam_point_labels.size(0) == B
         else:
             # If no points are provide, pad with an empty point (with label -1)
-            sam_point_coords = torch.zeros(B, 1, 2, device=device)
+            sam_point_coords = torch.zeros(B, 1, 3, device=device)
             sam_point_labels = -torch.ones(B, 1, dtype=torch.int32, device=device)
 
-        # b) Handle mask prompts
+        # b) Handle mask prompts(现在的版本暂时不管mask的提示)
         if mask_inputs is not None:
             # If mask_inputs is provided, downsize it into low-res mask input if needed
             # and feed it as a dense mask prompt into the SAM mask encoder
@@ -337,12 +336,13 @@ class SAM2_3D(torch.nn.Module):
             # Otherwise, simply feed None (and SAM's prompt encoder will add
             # a learned `no_mask_embed` to indicate no mask input in this case).
             sam_mask_prompt = None
-
+        # 过提示编码器的前向
         sparse_embeddings, dense_embeddings = self.sam_prompt_encoder(
             points=(sam_point_coords, sam_point_labels),
             boxes=None,
             masks=sam_mask_prompt,
         )
+        # 过掩码解码器的前向
         (
             low_res_multimasks,
             ious,
@@ -422,11 +422,12 @@ class SAM2_3D(torch.nn.Module):
         out_scale, out_bias = 20.0, -10.0  # sigmoid(-10.0)=4.5398e-05
         mask_inputs_float = mask_inputs.float()
         high_res_masks = mask_inputs_float * out_scale + out_bias
+        # 修改插值操作以适应 3D 图像
         low_res_masks = F.interpolate(
             high_res_masks,
-            size=(high_res_masks.size(-2) // 4, high_res_masks.size(-1) // 4),
+            size=(high_res_masks.size(-3) // 4, high_res_masks.size(-2) // 4, high_res_masks.size(-1) // 4),
             align_corners=False,
-            mode="bilinear",
+            mode="trilinear",  # 使用三线性插值
             antialias=True,  # use antialias for downsampling
         )
         # a dummy IoU prediction of all 1's under mask input
@@ -468,30 +469,36 @@ class SAM2_3D(torch.nn.Module):
     def forward_image(self, img_batch: torch.Tensor):
         """Get the image feature on the input batch."""
         backbone_out = self.image_encoder(img_batch)
-        if self.use_high_res_features_in_sam:
-            # precompute projected level 0 and level 1 features in SAM decoder
-            # to avoid running it again on every SAM click
-            backbone_out["backbone_fpn"][0] = self.sam_mask_decoder.conv_s0(
-                backbone_out["backbone_fpn"][0]
-            )
-            backbone_out["backbone_fpn"][1] = self.sam_mask_decoder.conv_s1(
-                backbone_out["backbone_fpn"][1]
-            )
+        # if self.use_high_res_features_in_sam:
+        #     # precompute projected level 0 and level 1 features in SAM decoder
+        #     # to avoid running it again on every SAM click
+        #     backbone_out["backbone_fpn"][0] = self.sam_mask_decoder.conv_s0(
+        #         backbone_out["backbone_fpn"][0]
+        #     )
+        #     backbone_out["backbone_fpn"][1] = self.sam_mask_decoder.conv_s1(
+        #         backbone_out["backbone_fpn"][1]
+        #     )
         return backbone_out
 
     def _prepare_backbone_features(self, backbone_out):
         """Prepare and flatten visual features."""
         backbone_out = backbone_out.copy()
-        assert len(backbone_out["backbone_fpn"]) == len(backbone_out["vision_pos_enc"])
-        assert len(backbone_out["backbone_fpn"]) >= self.num_feature_levels
+        # assert len(backbone_out["backbone_fpn"]) == len(backbone_out["vision_pos_enc"])
+        # assert len(backbone_out["backbone_fpn"]) >= self.num_feature_levels
 
-        feature_maps = backbone_out["backbone_fpn"][-self.num_feature_levels :]
-        vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
+        # feature_maps = backbone_out["backbone_fpn"][-self.num_feature_levels :]
+        # vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
 
-        feat_sizes = [(x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
-        # flatten NxCxHxW to HWxNxC
-        vision_feats = [x.flatten(2).permute(2, 0, 1) for x in feature_maps]
-        vision_pos_embeds = [x.flatten(2).permute(2, 0, 1) for x in vision_pos_embeds]
+        # 使用3D Encoder之后不支持使用多个特征图
+        feature_maps = backbone_out["backbone_fpn"][-1]
+        vision_pos_embeds = backbone_out["vision_pos_enc"]
+
+        # 计算特征图的尺寸 (D, W, H)
+        feat_sizes = [(x.shape[-3], x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
+
+        # 展平特征图和位置编码，形状从 (N, C, D, W, H) 变为 (D*W*H, N, C)
+        vision_feats = [x.flatten(2, 4).permute(2, 0, 1) for x in feature_maps]
+        vision_pos_embeds = [x.flatten(2, 4).permute(2, 0, 1) for x in vision_pos_embeds]
 
         return backbone_out, vision_feats, vision_pos_embeds, feat_sizes
 
@@ -509,12 +516,12 @@ class SAM2_3D(torch.nn.Module):
         """Fuse the current frame's visual feature map with previous memory."""
         B = current_vision_feats[-1].size(1)  # batch size on this frame
         C = self.hidden_dim
-        H, W = feat_sizes[-1]  # top-level (lowest-resolution) feature size
+        D, H, W = feat_sizes[-1]  # top-level (lowest-resolution) feature size
         device = current_vision_feats[-1].device
         # The case of `self.num_maskmem == 0` below is primarily used for reproducing SAM on images.
         # In this case, we skip the fusion with any memory.
         if self.num_maskmem == 0:  # Disable memory and skip fusion
-            pix_feat = current_vision_feats[-1].permute(1, 2, 0).view(B, C, H, W)
+            pix_feat = current_vision_feats[-1].permute(1, 2, 0).view(B, C, D, H, W)
             return pix_feat
 
         num_obj_ptr_tokens = 0
@@ -652,7 +659,7 @@ class SAM2_3D(torch.nn.Module):
             if self.directly_add_no_mem_embed:
                 # directly add no-mem embedding (instead of using the transformer encoder)
                 pix_feat_with_mem = current_vision_feats[-1] + self.no_mem_embed
-                pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, H, W)
+                pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, D, H, W)
                 return pix_feat_with_mem
 
             # Use a dummy token on the first frame (to avoid empty memory input to tranformer encoder)
@@ -670,8 +677,8 @@ class SAM2_3D(torch.nn.Module):
             memory_pos=memory_pos_embed,
             num_obj_ptr_tokens=num_obj_ptr_tokens,
         )
-        # reshape the output (HW)BC => BCHW
-        pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, H, W)
+        # reshape the output (DHW)BC => BCDHW
+        pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, D, H, W)
         return pix_feat_with_mem
 
     def _encode_new_memory(
@@ -685,9 +692,9 @@ class SAM2_3D(torch.nn.Module):
         """Encode the current image and its prediction into a memory feature."""
         B = current_vision_feats[-1].size(1)  # batch size on this frame
         C = self.hidden_dim
-        H, W = feat_sizes[-1]  # top-level (lowest-resolution) feature size
-        # top-level feature, (HW)BC => BCHW
-        pix_feat = current_vision_feats[-1].permute(1, 2, 0).view(B, C, H, W)
+        D, H, W = feat_sizes[-1]  # top-level (lowest-resolution) feature size
+        # top-level feature, (DHW)BC => BCDHW
+        pix_feat = current_vision_feats[-1].permute(1, 2, 0).view(B, C, D, H, W)
         if self.non_overlap_masks_for_mem_enc and not self.training:
             # optionally, apply non-overlapping constraints to the masks (it's applied
             # in the batch dimension and should only be used during eval, where all
@@ -717,8 +724,8 @@ class SAM2_3D(torch.nn.Module):
         if self.no_obj_embed_spatial is not None:
             is_obj_appearing = (object_score_logits > 0).float()
             maskmem_features += (
-                1 - is_obj_appearing[..., None, None]
-            ) * self.no_obj_embed_spatial[..., None, None].expand(
+                1 - is_obj_appearing[..., None, None, None]
+            ) * self.no_obj_embed_spatial[..., None, None, None].expand(
                 *maskmem_features.shape
             )
 
@@ -739,6 +746,7 @@ class SAM2_3D(torch.nn.Module):
         prev_sam_mask_logits,
     ):
         current_out = {"point_inputs": point_inputs, "mask_inputs": mask_inputs}
+        # 用不到，不做修改
         # High-resolution feature maps for the SAM head, reshape (HW)BC => BCHW
         if len(current_vision_feats) > 1:
             high_res_features = [

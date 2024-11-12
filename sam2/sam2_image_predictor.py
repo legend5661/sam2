@@ -402,7 +402,7 @@ class SAM2ImagePredictor:
                 concat_points = (concat_coords, concat_labels)
             else:
                 concat_points = (box_coords, box_labels)
-
+        # box和points都变成了concat_points
         sparse_embeddings, dense_embeddings = self.model.sam_prompt_encoder(
             points=concat_points,
             boxes=None,
