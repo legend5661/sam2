@@ -82,7 +82,8 @@ class ImageEncoderViT3D(nn.Module):
         """
         super().__init__()
         self.img_size = img_size
-
+        self.out_chans = out_chans
+        
         self.patch_embed = PatchEmbed3D(
             kernel_size=(patch_size, patch_size, patch_size),
             stride=(patch_size, patch_size, patch_size),
@@ -93,8 +94,12 @@ class ImageEncoderViT3D(nn.Module):
         self.pos_embed: Optional[nn.Parameter] = None
         if use_abs_pos:
             # Initialize absolute positional embedding with pretrain image size.
+            # (1,16,16,16,768)
+            # self.pos_embed = nn.Parameter(
+            #     torch.zeros(1, img_size // patch_size, img_size // patch_size, img_size // patch_size, embed_dim)
+            # )
             self.pos_embed = nn.Parameter(
-                torch.zeros(1, img_size // patch_size, img_size // patch_size, img_size // patch_size, embed_dim)
+                torch.zeros(1, img_size // patch_size, img_size // patch_size, img_size // patch_size, out_chans)
             )
 
         self.blocks = nn.ModuleList()
@@ -139,19 +144,21 @@ class ImageEncoderViT3D(nn.Module):
         x = self.patch_embed(x) # 就是进行了一个3D卷积将输入的图片转换为了patch embedding（步长设置为和kernel一样，这样相当于就是打完patch后分别投射）
         # x = [1,16,16,16,768]
         # import pdb; pdb.set_trace()
-        # 添加位置编码
-        if self.pos_embed is not None:
-            x = x + self.pos_embed
+
+        # # 添加位置编码（可能暂时不需要在此处添加位置编码）
+        # if self.pos_embed is not None:
+        #     x = x + self.pos_embed
+
         # 主要的过程，过ViT模块
         for blk in self.blocks:
             x = blk(x)
         # x = [1,16,16,16,768]
         x = self.neck(x.permute(0, 4, 1, 2, 3))
-
+        pos_embed_out = self.pos_embed.permute(0, 4, 1, 2, 3)
         # output_size = [1,256,16,16,16]
         output = {
             "backbone_fpn": [x,],
-            "vision_pos_enc": self.pos_embed,
+            "vision_pos_enc": list(pos_embed_out),
         }
         return output
 

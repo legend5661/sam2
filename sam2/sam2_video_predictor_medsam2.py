@@ -10,11 +10,11 @@ import torch
 
 from tqdm import tqdm
 
-from sam2.modeling.sam2_base import NO_OBJ_SCORE, SAM2Base
-from sam2.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames, load_video_frames_from_data
+from sam2.modeling.sam2_3d import NO_OBJ_SCORE, SAM2_3D
+from sam2.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames, my_load_video_frames_from_data
 
 
-class SAM2VideoPredictor(SAM2Base):
+class SAM2VideoPredictor(SAM2_3D):
     """The predictor class to handle user interactions and manage inference states."""
 
     def __init__(
@@ -120,10 +120,10 @@ class SAM2VideoPredictor(SAM2Base):
             video_height = self.image_size
             video_width = self.image_size
             video_depth = self.image_size
-        images = load_video_frames_from_data(
+        images = my_load_video_frames_from_data(
             imgs_tensor=imgs_tensor,
             offload_video_to_cpu=offload_video_to_cpu,
-            async_loading_frames=async_loading_frames,
+            # async_loading_frames=async_loading_frames,
         )
         inference_state = {}
         inference_state["images"] = images
@@ -195,10 +195,10 @@ class SAM2VideoPredictor(SAM2Base):
             video_height = self.image_size
             video_width = self.image_size
             video_depth = self.image_size
-        images = load_video_frames_from_data(
+        images = my_load_video_frames_from_data(
             imgs_tensor=imgs_tensor,
             offload_video_to_cpu=offload_video_to_cpu,
-            async_loading_frames=async_loading_frames,
+            # async_loading_frames=async_loading_frames,
         )
         inference_state = {}
         inference_state["images"] = images
@@ -589,7 +589,7 @@ class SAM2VideoPredictor(SAM2Base):
                 size=(self.image_size, self.image_size, self.image_size),
                 align_corners=False,
                 mode="trilinear",
-                antialias=True,  # use antialias for downsampling
+                # antialias=True,  # use antialias for downsampling
             )
             mask_inputs = (mask_inputs >= 0.5).float()
         else:
@@ -673,7 +673,7 @@ class SAM2VideoPredictor(SAM2Base):
                 size=(self.image_size, self.image_size, self.image_size),
                 align_corners=False,
                 mode="trilinear",
-                antialias=True,  # use antialias for downsampling
+                # antialias=True,  # use antialias for downsampling
             )
             mask_inputs = (mask_inputs >= 0.5).float()
         else:
@@ -803,6 +803,14 @@ class SAM2VideoPredictor(SAM2Base):
                 dtype=torch.float32,
                 device=inference_state["device"],
             ),
+            # "object_score_logits": torch.full(
+            #     size=(batch_size, 1),
+            #     # default to 10.0 for object_score_logits, i.e. assuming the object is
+            #     # present as sigmoid(10)=1, same as in `predict_masks` of `MaskDecoder`
+            #     fill_value=10.0,
+            #     dtype=torch.float32,
+            #     device=inference_state["device"],
+            # ),
         }
         empty_mask_ptr = None
         for obj_idx in range(batch_size):
@@ -846,7 +854,10 @@ class SAM2VideoPredictor(SAM2Base):
                     align_corners=False,
                 )
                 consolidated_pred_masks[obj_idx : obj_idx + 1] = resized_obj_mask
-            consolidated_out["obj_ptr"][obj_idx : obj_idx + 1] = out["obj_ptr"]
+            # consolidated_out["obj_ptr"][obj_idx : obj_idx + 1] = out["obj_ptr"]
+            # consolidated_out["object_score_logits"][obj_idx : obj_idx + 1] = out[
+            #     "object_score_logits"
+            # ]
 
         # Optionally, apply non-overlapping constraints on the consolidated scores
         # and rerun the memory encoder
@@ -865,6 +876,7 @@ class SAM2VideoPredictor(SAM2Base):
                 frame_idx=frame_idx,
                 batch_size=batch_size,
                 high_res_masks=high_res_masks,
+                # object_score_logits=consolidated_out["object_score_logits"],
                 is_mask_from_pts=True,  # these frames are what the user interacted with
             )
             consolidated_out["maskmem_features"] = maskmem_features
@@ -1239,6 +1251,7 @@ class SAM2VideoPredictor(SAM2Base):
                 "maskmem_pos_enc": None,
                 "pred_masks": current_out["pred_masks"][obj_slice],
                 "obj_ptr": current_out["obj_ptr"][obj_slice],
+                # "object_score_logits": current_out["object_score_logits"][obj_slice],
             }
             if maskmem_features is not None:
                 obj_out["maskmem_features"] = maskmem_features[obj_slice]
@@ -1293,17 +1306,17 @@ class SAM2VideoPredictor(SAM2Base):
             inference_state["cached_features"] = {frame_idx: (image, backbone_out)}
 
         # expand the features to have the same dimension as the number of objects
-        expanded_image = image.expand(batch_size, -1, -1, -1)
+        expanded_image = image.expand(batch_size, -1, -1, -1, -1)
         expanded_backbone_out = {
             "backbone_fpn": backbone_out["backbone_fpn"].copy(),
             "vision_pos_enc": backbone_out["vision_pos_enc"].copy(),
         }
         for i, feat in enumerate(expanded_backbone_out["backbone_fpn"]):
             expanded_backbone_out["backbone_fpn"][i] = feat.expand(
-                batch_size, -1, -1, -1
+                batch_size, -1, -1, -1, -1
             )
         for i, pos in enumerate(expanded_backbone_out["vision_pos_enc"]):
-            pos = pos.expand(batch_size, -1, -1, -1)
+            pos = pos.expand(batch_size, -1, -1, -1, -1)
             expanded_backbone_out["vision_pos_enc"][i] = pos
 
         features = self._prepare_backbone_features(expanded_backbone_out)
@@ -1376,8 +1389,12 @@ class SAM2VideoPredictor(SAM2Base):
         }
         return compact_current_out, pred_masks_gpu
 
+
+    # def _run_memory_encoder(
+    #     self, inference_state, frame_idx, batch_size, high_res_masks, object_score_logits,is_mask_from_pts,
+    # ):
     def _run_memory_encoder(
-        self, inference_state, frame_idx, batch_size, high_res_masks, is_mask_from_pts
+        self, inference_state, frame_idx, batch_size, high_res_masks, is_mask_from_pts,
     ):
         """
         Run the memory encoder on `high_res_masks`. This is usually after applying
@@ -1392,6 +1409,7 @@ class SAM2VideoPredictor(SAM2Base):
             current_vision_feats=current_vision_feats,
             feat_sizes=feat_sizes,
             pred_masks_high_res=high_res_masks,
+            # object_score_logits=object_score_logits,
             is_mask_from_pts=is_mask_from_pts,
         )
 
@@ -1424,7 +1442,7 @@ class SAM2VideoPredictor(SAM2Base):
             # expand the cached maskmem_pos_enc to the actual batch size
             batch_size = out_maskmem_pos_enc[0].size(0)
             expanded_maskmem_pos_enc = [
-                x.expand(batch_size, -1, -1, -1) for x in maskmem_pos_enc
+                x.expand(batch_size, -1, -1, -1, -1) for x in maskmem_pos_enc
             ]
         else:
             expanded_maskmem_pos_enc = None

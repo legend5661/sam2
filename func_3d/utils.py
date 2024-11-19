@@ -195,6 +195,72 @@ def generate_bbox_3d(mask, variation=0, seed=None):
         z0 = mid_z - d / 2
     return np.array([z0, y0, x0, z1, y1, x1])
 
+def eval_seg_3d(pred, true_mask_p, threshold):
+    '''
+    threshold: a int or a tuple of int
+    masks: [b, c, d, h, w]
+    pred: [b, c, d, h, w]
+    '''
+    b, c, d, h, w = pred.size()
+    if c == 2:
+        iou_d, iou_c, disc_dice, cup_dice = 0, 0, 0, 0
+        for th in threshold:
+
+            gt_vmask_p = (true_mask_p > th).float()
+            vpred = (pred > th).float()
+            vpred_cpu = vpred.cpu()
+            disc_pred = vpred_cpu[:, 0, :, :, :].numpy().astype('int32')
+            cup_pred = vpred_cpu[:, 1, :, :, :].numpy().astype('int32')
+
+            disc_mask = gt_vmask_p[:, 0, :, :, :].squeeze(1).cpu().numpy().astype('int32')
+            cup_mask = gt_vmask_p[:, 1, :, :, :].squeeze(1).cpu().numpy().astype('int32')
+
+            '''iou for numpy'''
+            iou_d += iou(disc_pred, disc_mask)
+            iou_c += iou(cup_pred, cup_mask)
+
+            '''dice for torch'''
+            disc_dice += dice_coeff(vpred[:, 0, :, :, :], gt_vmask_p[:, 0, :, :, :]).item()
+            cup_dice += dice_coeff(vpred[:, 1, :, :, :], gt_vmask_p[:, 1, :, :, :]).item()
+
+        return iou_d / len(threshold), iou_c / len(threshold), disc_dice / len(threshold), cup_dice / len(threshold)
+    elif c > 2:  # for multi-class segmentation > 2 classes
+        ious = [0] * c
+        dices = [0] * c
+        for th in threshold:
+            gt_vmask_p = (true_mask_p > th).float()
+            vpred = (pred > th).float()
+            vpred_cpu = vpred.cpu()
+            for i in range(0, c):
+                pred = vpred_cpu[:, i, :, :, :].numpy().astype('int32')
+                mask = gt_vmask_p[:, i, :, :, :].squeeze(1).cpu().numpy().astype('int32')
+
+                '''iou for numpy'''
+                ious[i] += iou(pred, mask)
+
+                '''dice for torch'''
+                dices[i] += dice_coeff(vpred[:, i, :, :, :], gt_vmask_p[:, i, :, :, :]).item()
+
+        return tuple(np.array(ious + dices) / len(threshold))  # tuple has a total number of c * 2
+    else:
+        eiou, edice = 0, 0
+        for th in threshold:
+
+            gt_vmask_p = (true_mask_p > th).float()
+            vpred = (pred > th).float()
+            vpred_cpu = vpred.cpu()
+            disc_pred = vpred_cpu[:, 0, :, :, :].numpy().astype('int32')
+
+            disc_mask = gt_vmask_p[:, 0, :, :, :].squeeze(1).cpu().numpy().astype('int32')
+
+            '''iou for numpy'''
+            eiou += iou(disc_pred, disc_mask)
+
+            '''dice for torch'''
+            edice += dice_coeff(vpred[:, 0, :, :, :], gt_vmask_p[:, 0, :, :, :]).item()
+
+        return eiou / len(threshold), edice / len(threshold)
+
 def eval_seg(pred,true_mask_p,threshold):
     '''
     threshold: a int or a tuple of int

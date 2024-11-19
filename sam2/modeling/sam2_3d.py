@@ -28,7 +28,7 @@ class SAM2_3D(torch.nn.Module):
         memory_attention,
         memory_encoder,
         num_maskmem=7,  # default 1 input frame + 6 previous frames
-        image_size=512,
+        image_size=256,
         backbone_stride=16,  # stride of the image backbone output
         sigmoid_scale_for_mem_enc=1.0,  # scale factor for mask sigmoid prob
         sigmoid_bias_for_mem_enc=0.0,  # bias factor for mask sigmoid prob
@@ -109,7 +109,7 @@ class SAM2_3D(torch.nn.Module):
             # A conv layer to downsample the mask prompt to stride 4 (the same stride as
             # low-res SAM mask logits) and to change its scales from 0~1 to SAM logit scale,
             # so that it can be fed into the SAM mask decoder to generate a pointer.
-            self.mask_downsample = torch.nn.Conv2d(1, 1, kernel_size=4, stride=4)
+            self.mask_downsample = torch.nn.Conv3d(1, 1, kernel_size=4, stride=4)
         self.add_tpos_enc_to_obj_ptrs = add_tpos_enc_to_obj_ptrs
         if proj_tpos_enc_in_obj_ptrs:
             assert add_tpos_enc_to_obj_ptrs  # these options need to be used together
@@ -120,7 +120,7 @@ class SAM2_3D(torch.nn.Module):
         # Part 2: memory attention to condition current frame's visual features
         # with memories (and obj ptrs) from past frames
         self.memory_attention = memory_attention
-        self.hidden_dim = image_encoder.embed_dim
+        self.hidden_dim = image_encoder.out_chans
 
         # Part 3: memory encoder for the previous frame's outputs
         self.memory_encoder = memory_encoder
@@ -302,6 +302,7 @@ class SAM2_3D(torch.nn.Module):
         """
         B = backbone_features.size(0)
         device = backbone_features.device
+        print('backbone_features:',backbone_features.size())
         assert backbone_features.size(1) == self.sam_prompt_embed_dim
         assert backbone_features.size(2) == self.sam_image_embedding_size
         assert backbone_features.size(3) == self.sam_image_embedding_size
@@ -318,24 +319,25 @@ class SAM2_3D(torch.nn.Module):
             sam_point_labels = -torch.ones(B, 1, dtype=torch.int32, device=device)
 
         # b) Handle mask prompts(现在的版本暂时不管mask的提示)
-        if mask_inputs is not None:
-            # If mask_inputs is provided, downsize it into low-res mask input if needed
-            # and feed it as a dense mask prompt into the SAM mask encoder
-            assert len(mask_inputs.shape) == 4 and mask_inputs.shape[:2] == (B, 1)
-            if mask_inputs.shape[-2:] != self.sam_prompt_encoder.mask_input_size:
-                sam_mask_prompt = F.interpolate(
-                    mask_inputs.float(),
-                    size=self.sam_prompt_encoder.mask_input_size,
-                    align_corners=False,
-                    mode="bilinear",
-                    antialias=True,  # use antialias for downsampling
-                )
-            else:
-                sam_mask_prompt = mask_inputs
-        else:
-            # Otherwise, simply feed None (and SAM's prompt encoder will add
-            # a learned `no_mask_embed` to indicate no mask input in this case).
-            sam_mask_prompt = None
+        # if mask_inputs is not None:
+        #     # If mask_inputs is provided, downsize it into low-res mask input if needed
+        #     # and feed it as a dense mask prompt into the SAM mask encoder
+        #     assert len(mask_inputs.shape) == 4 and mask_inputs.shape[:2] == (B, 1)
+        #     if mask_inputs.shape[-2:] != self.sam_prompt_encoder.mask_input_size:
+        #         sam_mask_prompt = F.interpolate(
+        #             mask_inputs.float(),
+        #             size=self.sam_prompt_encoder.mask_input_size,
+        #             align_corners=False,
+        #             mode="bilinear",
+        #             # antialias=True,  # use antialias for downsampling
+        #         )
+        #     else:
+        #         sam_mask_prompt = mask_inputs
+        # else:
+        #     # Otherwise, simply feed None (and SAM's prompt encoder will add
+        #     # a learned `no_mask_embed` to indicate no mask input in this case).
+        sam_mask_prompt = None
+        
         # 过提示编码器的前向
         sparse_embeddings, dense_embeddings = self.sam_prompt_encoder(
             points=(sam_point_coords, sam_point_labels),
@@ -363,7 +365,7 @@ class SAM2_3D(torch.nn.Module):
             # Mask used for spatial memories is always a *hard* choice between obj and no obj,
             # consistent with the actual mask prediction
             low_res_multimasks = torch.where(
-                is_obj_appearing[:, None, None],
+                is_obj_appearing[:, None, None, None],
                 low_res_multimasks,
                 NO_OBJ_SCORE,
             )
@@ -373,8 +375,8 @@ class SAM2_3D(torch.nn.Module):
         low_res_multimasks = low_res_multimasks.float()
         high_res_multimasks = F.interpolate(
             low_res_multimasks,
-            size=(self.image_size, self.image_size),
-            mode="bilinear",
+            size=(self.image_size, self.image_size, self.image_size),
+            mode="trilinear",
             align_corners=False,
         )
 
@@ -428,7 +430,7 @@ class SAM2_3D(torch.nn.Module):
             size=(high_res_masks.size(-3) // 4, high_res_masks.size(-2) // 4, high_res_masks.size(-1) // 4),
             align_corners=False,
             mode="trilinear",  # 使用三线性插值
-            antialias=True,  # use antialias for downsampling
+            # antialias=True,  # use antialias for downsampling
         )
         # a dummy IoU prediction of all 1's under mask input
         ious = mask_inputs.new_ones(mask_inputs.size(0), 1).float()
@@ -490,15 +492,17 @@ class SAM2_3D(torch.nn.Module):
         # vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
 
         # 使用3D Encoder之后不支持使用多个特征图
-        feature_maps = backbone_out["backbone_fpn"][-1]
+        feature_maps = backbone_out["backbone_fpn"]
         vision_pos_embeds = backbone_out["vision_pos_enc"]
 
         # 计算特征图的尺寸 (D, W, H)
         feat_sizes = [(x.shape[-3], x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
+        print('feat_sizes:', feat_sizes)
 
         # 展平特征图和位置编码，形状从 (N, C, D, W, H) 变为 (D*W*H, N, C)
         vision_feats = [x.flatten(2, 4).permute(2, 0, 1) for x in feature_maps]
         vision_pos_embeds = [x.flatten(2, 4).permute(2, 0, 1) for x in vision_pos_embeds]
+        print('vision_pos_embeds:', vision_pos_embeds[-1].shape)
 
         return backbone_out, vision_feats, vision_pos_embeds, feat_sizes
 
@@ -659,6 +663,8 @@ class SAM2_3D(torch.nn.Module):
             if self.directly_add_no_mem_embed:
                 # directly add no-mem embedding (instead of using the transformer encoder)
                 pix_feat_with_mem = current_vision_feats[-1] + self.no_mem_embed
+                print(B, C, D, H, W)
+                print(pix_feat_with_mem.shape)
                 pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, D, H, W)
                 return pix_feat_with_mem
 
@@ -666,9 +672,13 @@ class SAM2_3D(torch.nn.Module):
             to_cat_memory = [self.no_mem_embed.expand(1, B, self.mem_dim)]
             to_cat_memory_pos_embed = [self.no_mem_pos_enc.expand(1, B, self.mem_dim)]
 
+        print('no_mem_embed:', self.no_mem_embed.size())
+        print('no_mem_pos_enc:', self.no_mem_pos_enc.size())
         # Step 2: Concatenate the memories and forward through the transformer encoder
         memory = torch.cat(to_cat_memory, dim=0)
         memory_pos_embed = torch.cat(to_cat_memory_pos_embed, dim=0)
+        print('memory:', memory.size())
+        print('memory_pos_embed:', memory_pos_embed.size())
 
         pix_feat_with_mem = self.memory_attention(
             curr=current_vision_feats,
@@ -686,7 +696,7 @@ class SAM2_3D(torch.nn.Module):
         current_vision_feats,
         feat_sizes,
         pred_masks_high_res,
-        object_score_logits,
+        # object_score_logits,
         is_mask_from_pts,
     ):
         """Encode the current image and its prediction into a memory feature."""
@@ -721,13 +731,14 @@ class SAM2_3D(torch.nn.Module):
         maskmem_pos_enc = maskmem_out["vision_pos_enc"]
         # add a no-object embedding to the spatial memory to indicate that the frame
         # is predicted to be occluded (i.e. no object is appearing in the frame)
-        if self.no_obj_embed_spatial is not None:
-            is_obj_appearing = (object_score_logits > 0).float()
-            maskmem_features += (
-                1 - is_obj_appearing[..., None, None, None]
-            ) * self.no_obj_embed_spatial[..., None, None, None].expand(
-                *maskmem_features.shape
-            )
+        
+        # if self.no_obj_embed_spatial is not None:
+        #     is_obj_appearing = (object_score_logits > 0).float()
+        #     maskmem_features += (
+        #         1 - is_obj_appearing[..., None, None, None]
+        #     ) * self.no_obj_embed_spatial[..., None, None, None].expand(
+        #         *maskmem_features.shape
+        #     )
 
         return maskmem_features, maskmem_pos_enc
 
@@ -809,7 +820,7 @@ class SAM2_3D(torch.nn.Module):
                 current_vision_feats=current_vision_feats,
                 feat_sizes=feat_sizes,
                 pred_masks_high_res=high_res_masks_for_mem_enc,
-                object_score_logits=object_score_logits,
+                # object_score_logits=object_score_logits,
                 is_mask_from_pts=(point_inputs is not None),
             )
             current_out["maskmem_features"] = maskmem_features

@@ -41,6 +41,7 @@ class BTCV(Dataset):
         name = self.name_list[index]
         img_path = os.path.join(self.data_path, self.mode, 'image', name)
         mask_path = os.path.join(self.data_path, self.mode, 'mask', name)
+        
         data_seg_3d_shape = np.load(mask_path + '/0.npy').shape
         num_frame = len(os.listdir(mask_path))
         data_seg_3d = np.zeros(data_seg_3d_shape + (num_frame,))

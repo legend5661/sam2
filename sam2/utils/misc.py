@@ -210,6 +210,40 @@ def load_video_frames(
         )
 
 
+def my_load_video_frames(
+    video_path,
+    image_size,
+    offload_video_to_cpu,
+    async_loading_frames=False,
+    compute_device=torch.device("cuda"),
+):
+    """
+    Load the video frames from video_path. The frames are resized to image_size as in
+    the model and are loaded to GPU if offload_video_to_cpu=False. This is used by the demo.
+    """
+    is_bytes = isinstance(video_path, bytes)
+    is_str = isinstance(video_path, str)
+    is_mp4_path = is_str and os.path.splitext(video_path)[-1] in [".mp4", ".MP4"]
+    if is_bytes or is_mp4_path:
+        return load_video_frames_from_video_file(
+            video_path=video_path,
+            image_size=image_size,
+            offload_video_to_cpu=offload_video_to_cpu,
+            compute_device=compute_device,
+        )
+    elif is_str and os.path.isdir(video_path):
+        return load_video_frames_from_jpg_images(
+            video_path=video_path,
+            image_size=image_size,
+            offload_video_to_cpu=offload_video_to_cpu,
+            async_loading_frames=async_loading_frames,
+            compute_device=compute_device,
+        )
+    else:
+        raise NotImplementedError(
+            "Only MP4 video and JPEG folder are supported at this moment"
+        )
+
 def load_video_frames_from_jpg_images(
     video_path,
     image_size,
@@ -309,6 +343,7 @@ def load_video_frames_from_video_file(
     return images, video_height, video_width
 
 
+
 def fill_holes_in_mask_scores(mask, max_area):
     """
     A post processor to fill small holes in mask scores with area under `max_area`.
@@ -377,4 +412,17 @@ def load_video_frames_from_data(
     # normalize by mean and std
     images -= img_mean
     images /= img_std
+    return images
+
+def my_load_video_frames_from_data(
+    imgs_tensor,
+    offload_video_to_cpu,
+):
+    """
+    由于已经进行过归一化，不再重复
+    """
+    images = imgs_tensor
+    if not offload_video_to_cpu:
+        images = images.cuda()
+    # normalize by mean and std
     return images

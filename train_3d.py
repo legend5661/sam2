@@ -86,6 +86,9 @@ def main():
 
     nice_train_loader, nice_test_loader = get_dataloader(args)
 
+
+    # exit()
+
     '''checkpoint path and tensorboard'''
     checkpoint_path = os.path.join(settings.CHECKPOINT_PATH, args.net, settings.TIME_NOW)
     #use tensorboard

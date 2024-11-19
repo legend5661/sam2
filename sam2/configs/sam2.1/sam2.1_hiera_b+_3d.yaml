@@ -5,9 +5,9 @@ model:
   _target_: sam2.modeling.sam2_3d.SAM2_3D
   image_encoder:
     _target_: sam2.modeling.backbones.image_encoder3D.ImageEncoderViT3D
-    img_size: 256
+    img_size: 64
     patch_size: 16
-    in_chans: 2
+    in_chans: 1
 
   memory_attention:
     _target_: sam2.modeling.memory_attention.MemoryAttention
@@ -28,7 +28,7 @@ model:
         downsample_rate: 1
         dropout: 0.1
       d_model: 256
-      pos_enc_at_cross_attn_keys: true
+      pos_enc_at_cross_attn_keys: false #这两个参数目前设置为true有点问题
       pos_enc_at_cross_attn_queries: false
       cross_attention:
         _target_: sam2.modeling.sam.transformer.RoPEAttention
@@ -68,7 +68,7 @@ model:
         num_layers: 2
 
   num_maskmem: 7
-  image_size: 1024
+  image_size: 64
   # apply scaled sigmoid on mask logits for memory encoder, and directly feed input mask as output mask
   sigmoid_scale_for_mem_enc: 20.0
   sigmoid_bias_for_mem_enc: -10.0
@@ -77,7 +77,7 @@ model:
   directly_add_no_mem_embed: true
   no_obj_embed_spatial: true
   # use high-resolution feature map in the SAM mask decoder
-  use_high_res_features_in_sam: true
+  use_high_res_features_in_sam: false
   # output 3 masks on the first click on initial conditioning frames
   multimask_output_in_sam: true
   # SAM heads

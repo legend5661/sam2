@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 import cfg
 from conf import settings
-from func_3d.utils import eval_seg
+from func_3d.utils import eval_seg, eval_seg_3d
 
 args = cfg.parse_args()
 
@@ -246,7 +246,8 @@ def validation_sam(args, val_loader, epoch, net: nn.Module, clean_dir=True):
                 point_labels_dict = pack['p_label']
             elif prompt == 'bbox':
                 bbox_dict = pack['bbox']
-            if len(imgs_tensor.size()) == 5:
+            print(imgs_tensor.shape)
+            if len(imgs_tensor.size()) == 6:
                 imgs_tensor = imgs_tensor.squeeze(0)
             frame_id = list(range(imgs_tensor.size(0)))
             
@@ -324,7 +325,7 @@ def validation_sam(args, val_loader, epoch, net: nn.Module, clean_dir=True):
                             plt.savefig(f'./temp/val/{name[0]}/{id}/{ann_obj_id}.png', bbox_inches='tight', pad_inches=0)
                             plt.close()
                         loss += lossfunc(pred, mask)
-                        temp = eval_seg(pred, mask, threshold)
+                        temp = eval_seg_3d(pred, mask, threshold)
                         pred_iou += temp[0]
                         pred_dice += temp[1]
 

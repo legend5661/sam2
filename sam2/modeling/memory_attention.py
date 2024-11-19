@@ -71,6 +71,8 @@ class MemoryAttentionLayer(nn.Module):
 
         # Cross-Attention
         tgt2 = self.norm2(tgt)
+        print('memory',memory.shape)
+        print('pos',pos.shape)
         tgt2 = self.cross_attn_image(
             q=tgt2 + query_pos if self.pos_enc_at_cross_attn_queries else tgt2,
             k=memory + pos if self.pos_enc_at_cross_attn_keys else memory,
@@ -137,6 +139,8 @@ class MemoryAttention(nn.Module):
         ), "Batch size must be the same for curr and memory"
 
         output = curr
+        print("output", output.shape)
+        print("curr_pos", curr_pos.shape)
         if self.pos_enc_at_input and curr_pos is not None:
             output = output + 0.1 * curr_pos
 
